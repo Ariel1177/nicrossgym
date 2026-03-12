@@ -1,0 +1,9 @@
+🧠 Flujo correcto del generador
+
+El motor debería seguir este orden:
+
+1️⃣ clasificarUsuario()
+2️⃣ elegirSplit()
+3️⃣ calcularVolumen()
+4️⃣ construirSemana()
+5️⃣ seleccionarEjercicios()

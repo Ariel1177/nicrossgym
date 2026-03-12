@@ -1,0 +1,247 @@
+# 🏋️ Análisis Profundo — Generador de Rutinas NICROSS
+
+## 1. Estructura del Proyecto
+
+```
+generadorDeRutinas/
+├── index.html                    ← Punto de entrada (carga app1.js)
+├── data/
+│   ├── usuarios.js               ← Base de datos de usuarios (raw)
+│   ├── usuario.js                ← Procesa y enriquece usuarios
+│   ├── ejercicios.js             ← Catálogo de ejercicios (~50+ ejercicios)
+│   ├── splitSemanales.js         ← Splits por días de entrenamiento (2-6 días)
+│   ├── volumenPorNivel.js        ← Volumen según nivel NICROSS
+│   └── mapaMusculoEjercicios.js  ← Mapa músculo → ejercicio
+├── training/
+│   ├── bloques.js                ← Bloques por nivel NICROSS y foco
+│   ├── parametrosPorBloque.js    ← Series, reps, tempo, descanso por bloque
+│   ├── generadorRutina.js        ← Genera rutina semanal (usa DB ejercicios)
+│   ├── generadorSemanaReal.js    ← Genera semana con cargas reales
+│   ├── generadorSesiones.js      ← Sesión detallada con validación NICROSS
+│   ├── selectorEjercicios.js     ← Filtra ejercicios por patrón/nivel/equip.
+│   ├── calculadoraCarga.js       ← Calcula kg según %1RM
+│   ├── estructuraMesociclos.js   ← Estructura de mesociclos
+│   ├── asignarBloques.js         ← Asignación de bloques
+│   └── parametrosPorBloque.js    ← Parámetros de trabajo por bloque
+└── js/
+    ├── app.js                    ← Version antigua (usa bloques simples)
+    └── app1.js                   ← Version activa (genera semana real + objeto final)
+```
+
+---
+
+## 2. Propiedades de [usuarios.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/data/usuarios.js) (datos crudos)
+
+Cada usuario en el array `users` tiene estas propiedades:
+
+| Propiedad | Tipo | Descripción | Valores posibles |
+|---|---|---|---|
+| [id](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/training/selectorEjercicios.js#130-146) | `string` | Identificador único | `"user_001"` … `"user_008"` |
+| `nombre` | `string` | Nombre completo | — |
+| `fecha_nacimiento` | `string` | Fecha ISO `"YYYY-MM-DD"` | — |
+| `fecha_ingreso` | `string` | Fecha ISO de ingreso al programa | — |
+| `sexo` | `string` | Sexo biológico | `"masculino"` / `"femenino"` |
+| `altura_cm` | `number` | Altura en centímetros | `162`–`182` |
+| `peso_kg` | `number` | Peso en kilogramos | `54`–`95` |
+| `nivel` | `string` | Nivel autodeclarado | `"principiante"`, `"intermedio"`, `"avanzado"` |
+| `objetivo` | `string` | Objetivo de entrenamiento | `"hipertrofia"`, `"perder_grasa"`, `"fuerza"`, `"tonificacion"`, `"recomposicion_corporal"`, `"gluteos_hipertrofia"` |
+| `experiencia_anios` | `number` | Años de experiencia | `0`–`6` |
+| `dias_entrenamiento` | `number` | Días/semana que puede entrenar | `3`–`6` |
+| `equipamiento` | `string` | Equipamiento disponible | `"gimnasio_completo"`, `"casa_mancuernas"` |
+| `limitaciones` | `array` | Restricciones físicas | `[]` o `["dolor_lumbar"]` |
+| `tiempo_por_sesion_min` | `number` | Minutos disponibles por sesión | `45`–`90` |
+
+> **Inconsistencia detectada:** `user_006` Diego Alvarez tiene `nivel: "intermedio"` pero `experiencia_anios: 0`. Esto genera una contradicción ya que el sistema NICROSS lo clasificaría como `N1_sedentario` (por `experiencia === 0`), ignorando el nivel autodeclarado.
+
+---
+
+## 3. Propiedades del Objeto Usuario en Consola (`usuario_nicross`)
+
+El objeto final mostrado en consola por [app1.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/js/app1.js) agrega las siguientes propiedades **calculadas** sobre el usuario crudo:
+
+### 3.1 Propiedades heredadas de [usuarios.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/data/usuarios.js)
+Todas las propiedades crudas se preservan con spread: [id](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/training/selectorEjercicios.js#130-146), `nombre`, `sexo`, `fecha_nacimiento`, `peso_kg`, `altura_cm`, `objetivo`, `experiencia_anios`, `dias_entrenamiento`, `equipamiento`, `limitaciones`, `tiempo_por_sesion_min`, `fecha_ingreso`.
+
+### 3.2 Propiedades calculadas agregadas por [usuario.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/data/usuario.js)
+
+| Propiedad | Tipo | Cómo se calcula |
+|---|---|---|
+| `edad` | `number` | [calcularEdad(fecha_nacimiento)](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/data/usuario.js#92-120) → años completos |
+| `dias_hasta_cumpleaños` | `object` | `{ dias, proxima_fecha, cumple_hoy }` |
+| `dias_en_programa` | `object` | `{ dias, semanas, meses }` desde `fecha_ingreso` |
+| `imc` | `object` | `{ imc: number, categoria_imc: string }` — OMS: bajo_peso / normopeso / sobrepeso / obesidad_grado_1/2/3 |
+| `nivel_usuario` | `string` | Copia del `nivel` original autodeclarado |
+| `nivel_nicross` | `string` | Clasificación del sistema: `N1_sedentario`, `N2_inicial_activo`, `N3_intermedio`, `N4_avanzado` |
+| `fuerzaMaxima` | `object` | 1RM estimado × patrón (ver abajo) |
+| `split_semanal_recomendado` | `object` | Split + bloques enriquecidos (ver abajo) |
+| `rutinaSemanalCompleta` | `object` | Rutina con ejercicios seleccionados de la DB |
+
+### 3.3 Estructura de `fuerzaMaxima` (estimado desde peso corporal)
+
+```js
+fuerzaMaxima: {
+    empuje_horizontal:  75 * 0.85,  // Press banca
+    traccion_horizontal: 75 * 1.0,  // Remo
+    empuje_vertical:     75 * 0.55, // Press hombro
+    traccion_vertical:   75 * 0.65, // Dominadas
+    cuadriceps:         75 * 1.35,  // Sentadilla
+    cadena_posterior:   75 * 1.85,  // Peso muerto
+    gluteos:            75 * 1.25,  // Hip thrust
+    pantorrillas:       75 * 1.6,
+    flexion_trunk:      75 * 0.7,
+    extension_trunk:    75 * 0.9,
+    rotacion_trunk:     75 * 0.6
+}
+```
+
+### 3.4 Estructura de `split_semanal_recomendado`
+
+```js
+split_semanal_recomendado: {
+    nombre: "superior_inferior_mas",  // nombre del split
+    dias: [
+        {
+            dia: 1,
+            foco: "tren_superior",
+            enfasis: "empuje",
+            bloques_dia: ["activacion", "fuerza_compuesto", "hipertrofia_volumen", "accesorios", "core"]
+        },
+        // ...
+    ]
+}
+```
+
+### 3.5 Estructura de `semana_entrenamiento` (generada por [app1.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/js/app1.js))
+
+```js
+semana_entrenamiento: {
+    usuario_id, usuario_nombre, nivel_nicross, objetivo,
+    dias: [
+        {
+            numero_dia: 1,
+            foco: "tren_superior",
+            bloques: [
+                {
+                    tipo: "fuerza_compuesto",
+                    indice: 2,
+                    ejercicios: [
+                        {
+                            numero: 1,
+                            nombre: "Press Banca",
+                            patron: "empuje_horizontal",
+                            series: 4,
+                            repeticiones_min: 6,
+                            repeticiones_max: 8,
+                            carga_kg: 55.0,       // calculado como %1RM redondeado a 2.5kg
+                            rpe_estimado: 10,
+                            descanso_seg: { min: 90, max: 180 },
+                            tempo: { excentric: 2, pause: 1, concentric: 2 },
+                            notas: "Fuerza máxima con ejercicios complejos"
+                        }
+                    ]
+                }
+            ],
+            total_series: 14
+        }
+    ],
+    resumen: {
+        total_dias: 5,
+        total_series_semana: 70,
+        series_promedio_por_dia: 14
+    }
+}
+```
+
+---
+
+## 4. Flujo de Datos Completo
+
+```mermaid
+flowchart TD
+    A[usuarios.js\nDatos crudos] --> B[usuario.js\nEnriquecimiento]
+    B --> C{Para cada user}
+    C --> D[calcularEdad]
+    C --> E[calcularIMC]
+    C --> F[clasificarNivelNicross]
+    C --> G[sugerirTipoEntrenamiento\nsplitSemanales.js]
+    C --> H[agregarFuerzaMaximaEstimada]
+    C --> I[enriquecerSplitConBloques\nbloques.js]
+    C --> J[generarRutinaSemanal\ngeneradorRutina.js + ejercicios.js]
+    B --> K[array usuario exportado]
+    K --> L[app1.js]
+    L --> M[generarSemanaCompleta\ngeneradorSemanaReal.js]
+    M --> N[objeto usuario_nicross\nmostrado en consola]
+```
+
+---
+
+## 5. Lógica de Clasificación NICROSS
+
+| Condición | Nivel |
+|---|---|
+| `experiencia === 0` ó `dias <= 1` | `N1_sedentario` |
+| `experiencia < 1` | `N2_inicial_activo` |
+| `1 <= experiencia <= 3` | `N3_intermedio` |
+| `experiencia > 3` | `N4_avanzado` |
+
+> **Nota:** el campo `nivel` autodeclarado del usuario NO afecta la clasificación NICROSS. Solo se guarda como `nivel_usuario` a modo de referencia.
+
+---
+
+## 6. Problemas y Inconsistencias Detectadas
+
+### 🔴 Problema 1: [bloques.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/training/bloques.js) tiene `N2_principiante` pero [usuario.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/data/usuario.js) genera `N2_inicial_activo`
+[clasificarNivelNicross()](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/data/usuario.js#247-269) devuelve `"N2_inicial_activo"`, pero en [bloques.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/training/bloques.js) la clave es `N2_principiante`. Esto hace que cualquier usuario N2 no encuentre sus bloques y devuelva `[]`.
+
+### 🔴 Problema 2: [parametrosPorBloque.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/training/parametrosPorBloque.js) también usa `N2_principiante`
+El mismo desacople: la función de clasificación llama al nivel `N2_inicial_activo`, pero los parámetros están bajo `N2_principiante`. Resultado: **usuarios N2 no reciben parámetros de bloques**.
+
+### 🟡 Problema 3: [selectorEjercicios.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/training/selectorEjercicios.js) tiene claves duplicadas `activacion`
+El objeto `patronesPorBloque` declara `activacion` dos veces (para N2 y N3). En JS, la segunda definición sobreescribe la primera, así que N2 y N3 terminan compartiendo la misma lista de patrones para activación.
+
+### 🟡 Problema 4: `fuerzaMaxima` no coincide con los patrones de [ejercicios.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/data/ejercicios.js)
+`fuerzaMaxima` usa claves como `empuje_horizontal`, `traccion_horizontal`, `cuadriceps`, `cadena_posterior`, `gluteos`. Pero en [ejercicios.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/data/ejercicios.js), los patrones son `bisagra`, `sentadilla`, `empuje_horizontal`, `traccion_horizontal`. Al calcular la carga (`usuario.fuerzaMaxima[ej.patron]`), el patrón `bisagra` (usado en peso muerto, hip thrust) no existe en `fuerzaMaxima`, usando el fallback de `100kg`.
+
+### 🟡 Problema 5: [app.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/js/app.js) y [app1.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/js/app1.js) coexisten sin coordinación
+[index.html](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/index.html) carga [app1.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/js/app1.js) como `type="module"`. [app.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/js/app.js) contiene lógica distinta (más antigua) pero no se usa; genera confusión.
+
+### 🟡 Problema 6: `usuario_006` tiene `nivel: "intermedio"` con `experiencia_anios: 0`
+El sistema lo clasifica como `N1_sedentario`, ignorando el nivel declarado. No hay mecanismo de override.
+
+---
+
+## 7. Propiedades del Ejercicio en [ejercicios.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/data/ejercicios.js)
+
+Cada ejercicio en el catálogo tiene:
+
+| Propiedad | Tipo | Descripción |
+|---|---|---|
+| [id](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/training/selectorEjercicios.js#130-146) | `string` | Identificador único (snake_case) |
+| `nombre` | `string` | Nombre legible |
+| `patron` | `string` | Patrón de movimiento (`bisagra`, `empuje_horizontal`, `sentadilla`, `traccion_vertical`, `zancada`, `aislamiento`, `anti_extension`, `anti_rotacion`, `locomocion`, `rotacion`, `core_flexion`) |
+| `tipo` | `string` | `"compuesto"`, `"aislado"`, `"core"`, `"movilidad"`, `"tecnico"` |
+| `plano` | `string` | `"sagital"`, `"frontal"`, `"transversal"` |
+| `musculosPrimarios` | `array` | Músculos principales trabajados |
+| `musculosSecundarios` | `array` | Músculos secundarios |
+| `objetivosCompatibles` | `array` | `"fuerza"`, `"hipertrofia"`, `"potencia"`, `"estabilidad"`, `"salud"`, `"movilidad"`, etc. |
+| `nivelMinimo` | `number` | Nivel mínimo NICROSS (1–4) para usar el ejercicio |
+| `equipamiento` | `array` | Equipamiento requerido (`"barra"`, `"mancuernas"`, `"polea_alta"`, `"peso_corporal"`, etc.) |
+| `tipoCarga` | `string` | `"porcentaje_rm"`, `"carga_fija"`, `"peso_corporal"` |
+| `rmReferencia` | `string\|null` | `"1RM"` o `null` |
+| `repRangeIdeal` | `array\|null` | `[min, max]` de repeticiones ideales |
+| `modoEjecucion` | `string` | `"reps"` o `"tiempo"` |
+| `duracionBaseSeg` | `number\|null` | Segundos base (para ejercicios de tiempo) |
+| `fatiga` | `number` | Puntuación de fatiga (1–5) |
+| `prioridad` | `number` | Prioridad dentro del bloque (1=mayor) |
+
+---
+
+## 8. Resumen de Correcciones Prioritarias
+
+| # | Severidad | Descripción | Archivo(s) |
+|---|---|---|---|
+| 1 | 🔴 Crítico | Renombrar `N2_principiante` → `N2_inicial_activo` | [bloques.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/training/bloques.js), [parametrosPorBloque.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/training/parametrosPorBloque.js) |
+| 2 | 🔴 Crítico | Corregir clave duplicada `activacion` en patronesPorBloque | [selectorEjercicios.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/training/selectorEjercicios.js) |
+| 3 | 🟡 Medio | Añadir `bisagra` y `sentadilla` a `fuerzaMaxima` para calcular cargas correctamente | [usuario.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/data/usuario.js) |
+| 4 | 🟡 Medio | Eliminar o deprecar [app.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/js/app.js) para evitar confusión | [js/app.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/js/app.js) |
+| 5 | 🟢 Bajo | Agregar validación o override cuando `nivel` declarado difiere de la clasificación NICROSS | [usuario.js](file:///c:/Users/ariel/Proyectos/Lucas/generadorDeRutinas/data/usuario.js) |
