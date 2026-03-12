@@ -1,7 +1,7 @@
 export const users = [
   {
     "id": "user_001",
-    "nombre": "Ariel Diaz",
+    "nombre": "NICROSS",
     "fecha_nacimiento": "1977-11-28",
     "fecha_ingreso": "2025-11-05",
     "sexo": "masculino",
@@ -369,4 +369,5 @@ export const users = [
 "limitaciones": [],
 "tiempo_por_sesion_min": 70
 }
+
 ]
